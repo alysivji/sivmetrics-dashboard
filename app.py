@@ -19,37 +19,41 @@ import pandas as pd
 CTA_BASE_URL = 'http://www.ctabustracker.com/bustime/api/v2/getpredictions'
 CTA_API_KEY = os.getenv('CTA_API_KEY', None)
 
+# global variables
+cta_counter = 0
+cta_results = []
+
 
 ###########################
 # Data Manipulation / Model
 ###########################
 
-def fetch_cta_data(route=None):
+def fetch_cta_data(route=None, stop_id='1066'):
     CTA_BASE_URL = 'http://www.ctabustracker.com/bustime/api/v2/getpredictions'
     CTA_API_KEY = os.getenv('CTA_API_KEY', None)
 
+    # set up request parameters
     payload = {
         'key': CTA_API_KEY,
-        'stpid': 1066,
+        'stpid': stop_id,
         'format': 'json'
     }
-
     if route is not None:
         payload['rt'] = route
 
-    r = requests.get(CTA_BASE_URL, params=payload)
     right_now = maya.MayaDT.from_datetime(datetime.datetime.now())
-
-    upcoming_buses = []
-    for bus in r.json()['bustime-response']['prd']:
+    r = requests.get(CTA_BASE_URL, params=payload)
+    upcoming_buses = r.json().get('bustime-response', None).get('prd', None)
+    cleaned_results = []
+    for bus in upcoming_buses:
         predicted_time = maya.parse(bus['prdtm'])
         min_till_next_bus = (predicted_time.epoch - right_now.epoch) / 60
 
-        upcoming_buses.append(
+        cleaned_results.append(
             (bus['rt'], math.floor(min_till_next_bus))
         )
 
-    return pd.DataFrame.from_records(upcoming_buses, columns=['Bus', 'ETA'])
+    return pd.DataFrame.from_records(cleaned_results, columns=['Bus', 'ETA'])
 
 
 #########################
@@ -87,11 +91,26 @@ app.layout = html.Div([
     events=[Event('cta-interval-component', 'interval')]
 )
 def load_uncoming_buses():
-    results = fetch_cta_data()
+    # between 6am and 9pm, we will refresh every 20 seconds
+    # during the rest of the day, refresh every 2 minutes
+    global cta_counter
+    global cta_results  # global scope keeps result from previous API request
+
+    # do we need to poll the API?
+    now = datetime.datetime.now()
+    early_morning = 6 <= now.hour <= 9
+    counter_full = cta_counter >= 2
+    refresh_data = early_morning or counter_full
+
+    if refresh_data:
+        cta_results = fetch_cta_data()
+        cta_counter = 0
+    else:
+        cta_counter += 1
 
     table = []
-    if len(results) > 0:
-        table = ff.create_table(results)
+    if len(cta_results) > 0:
+        table = ff.create_table(cta_results)
 
     return table
 
